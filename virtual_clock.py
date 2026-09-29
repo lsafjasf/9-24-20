@@ -19,7 +19,10 @@ Semantics guaranteed by BOTH implementations:
   * A cancelled TimerHandle never fires again, no matter how far time
     advances.
   * Repeating timers are rescheduled at deadline + period (no drift), so
-    they produce instances on a stable periodic grid.
+    they produce instances on a stable periodic grid, and they keep their
+    original registration order: when several timers are due at the same
+    instant, the one registered first fires first, no matter how often
+    each has been rescheduled.
 """
 
 from __future__ import annotations
@@ -131,14 +134,17 @@ class VirtualClock(Clock):
             self._discard_cancelled()
             if not self._heap or self._heap[0][0] > when:
                 break
-            deadline, _seq, handle, callback, args, period = heapq.heappop(self._heap)
+            deadline, seq, handle, callback, args, period = heapq.heappop(self._heap)
             self._now = deadline
             if period is not None:
                 # Reschedule on a stable grid (deadline + period, no drift)
                 # *before* firing, so a callback may cancel future instances.
+                # The entry keeps its original seq so that repeating timers
+                # colliding at the same instant still fire in registration
+                # order (FIFO), as the module contract promises.
                 heapq.heappush(
                     self._heap,
-                    (deadline + period, next(self._seq), handle, callback, args, period),
+                    (deadline + period, seq, handle, callback, args, period),
                 )
             callback(*args)
         self._now = when
@@ -167,9 +173,15 @@ class RealClock(Clock):
     ordering semantics match VirtualClock exactly: same-deadline callbacks
     fire FIFO, and timers scheduled from inside callbacks join the same
     ordered queue.
+
+    The time source is injectable via the ``monotonic`` argument so tests
+    can drive the scheduler deterministically instead of relying on
+    wall-clock waits. ``_notify_settled`` is a no-op hook that lets such
+    tests observe scheduler quiescence.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, monotonic=None) -> None:
+        self._monotonic = time.monotonic if monotonic is None else monotonic
         self._cond = threading.Condition()
         self._heap: list = []
         self._seq = itertools.count()
@@ -181,13 +193,13 @@ class RealClock(Clock):
         self._thread.start()
 
     def now(self) -> float:
-        return time.monotonic()
+        return self._monotonic()
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 
     def call_later(self, delay: float, callback, *args) -> TimerHandle:
-        return self._schedule(time.monotonic() + delay, callback, args, None)
+        return self._schedule(self._monotonic() + delay, callback, args, None)
 
     def call_at(self, when: float, callback, *args) -> TimerHandle:
         return self._schedule(when, callback, args, None)
@@ -195,7 +207,7 @@ class RealClock(Clock):
     def call_repeated(self, period: float, callback, *args) -> TimerHandle:
         if period <= 0:
             raise ValueError("period must be positive")
-        return self._schedule(time.monotonic() + period, callback, args, period)
+        return self._schedule(self._monotonic() + period, callback, args, period)
 
     def _schedule(self, deadline, callback, args, period) -> TimerHandle:
         handle = TimerHandle()
@@ -222,6 +234,11 @@ class RealClock(Clock):
     def __exit__(self, *exc) -> None:
         self.close()
 
+    def _notify_settled(self) -> None:
+        """Testing hook, called with ``self._cond`` held whenever the
+        scheduler thread has fired everything due at the current time and
+        is about to block. The default implementation does nothing."""
+
     def _run(self) -> None:
         while True:
             with self._cond:
@@ -231,18 +248,22 @@ class RealClock(Clock):
                     while self._heap and self._heap[0][2].cancelled:
                         heapq.heappop(self._heap)
                     if not self._heap:
+                        self._notify_settled()
                         self._cond.wait()
                         continue
                     deadline = self._heap[0][0]
-                    remaining = deadline - time.monotonic()
+                    remaining = deadline - self._monotonic()
                     if remaining > 0:
+                        self._notify_settled()
                         self._cond.wait(remaining)
                         continue
-                    _dl, _seq, handle, callback, args, period = heapq.heappop(self._heap)
+                    deadline, seq, handle, callback, args, period = heapq.heappop(self._heap)
                     if period is not None:
+                        # Keep the original seq, exactly like VirtualClock,
+                        # so same-instant repeating timers fire FIFO.
                         heapq.heappush(
                             self._heap,
-                            (deadline + period, next(self._seq), handle, callback, args, period),
+                            (deadline + period, seq, handle, callback, args, period),
                         )
                     break
             try:

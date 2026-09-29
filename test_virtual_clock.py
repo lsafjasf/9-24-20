@@ -112,6 +112,19 @@ class CancelTests(unittest.TestCase):
 
 
 class RepeatTests(unittest.TestCase):
+    def test_colliding_repeating_timers_keep_registration_order(self):
+        clock = VirtualClock()
+        events = []
+        # Both are due at t=6. "first" was registered first but rescheduled
+        # more recently (t=4 vs t=3); registration order, not rescheduling
+        # order, must win at the collision.
+        clock.call_repeated(2.0, lambda: events.append("first"))
+        clock.call_repeated(3.0, lambda: events.append("second"))
+        clock.advance_to(6.0)
+        self.assertEqual(
+            events, ["first", "second", "first", "first", "second"]
+        )
+
     def test_repeating_timer_produces_stable_periodic_instances(self):
         clock = VirtualClock(start=0.5)
         fires = []

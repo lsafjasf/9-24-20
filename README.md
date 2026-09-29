@@ -8,7 +8,7 @@
 - `retry_logic.py` — 被测示例逻辑 `fetch_with_retry`（每次尝试带超时、失败退避重试），只依赖注入的 `Clock`。
 - `test_virtual_clock.py` — 时钟语义自测：同时刻 FIFO、推进中新增定时器的排序、取消、重复定时（无漂移）。
 - `test_retry_logic.py` — 示例逻辑在虚拟时钟下的时序测试（无真实等待）。
-- `test_parity.py` — 对照测试：同一段逻辑在虚拟与真实时钟下的事件顺序必须一致。
+- `test_parity.py` — 对照测试：同一段逻辑在虚拟与真实时钟下的事件顺序必须一致。真实侧运行在手动推进的时间基上（`DrivenRealClock`，复用 `RealClock` 的调度线程与堆排序），不依赖真实等待，结果确定。
 
 ## 语义保证（两个实现一致）
 
@@ -20,7 +20,7 @@
 ## 运行
 
 ```bash
-cd /home/administrator/gsb/uid20/B
+cd /home/administrator/gsb/uid202/A
 python3 -m unittest discover -v        # 全部测试
 python3 -m unittest test_virtual_clock # 仅时钟语义
 python3 -m unittest test_retry_logic   # 示例逻辑时序
